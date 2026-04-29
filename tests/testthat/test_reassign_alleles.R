@@ -1,5 +1,37 @@
 imgt_url <- "https://raw.githubusercontent.com/nf-core/test-datasets/airrflow/database-cache/imgtdb_base.zip"
 
+test_that("hamming distance matrix matches TIgGER mutation counts", {
+  sequences <- c("acgtn.-", "ACGTAAC")
+  refs <- c(ref1 = "ACGTAAA", ref2 = "ACGTTAC")
+
+  dist_mat <- enchantr:::.compute_hamming_dist_mat(sequences, refs)
+  expected <- sapply(refs, function(ref) {
+    lengths(tigger::getMutatedPositions(
+      sequences,
+      rep(ref, length(sequences)),
+      match_instead = FALSE,
+      ignored_regex = "[\\.N-]"
+    ))
+  })
+  expect_equal(unname(dist_mat), unname(expected))
+
+  trim_data <- data.frame(d_germline_start = c(1, 2), d_germline_end = c(4, 5))
+  dist_mat <- enchantr:::.compute_hamming_dist_mat(
+    sequences = c("ACGT", "CGTA"),
+    ref_list = refs,
+    trim_seq = TRUE,
+    data = trim_data,
+    germline_trim_columns = c("d_germline_start", "d_germline_end"),
+    indices = seq_len(nrow(trim_data))
+  )
+  expect_equal(dim(dist_mat), c(2L, 2L))
+
+  expect_equal(
+    enchantr:::.compute_hamming_dist_mat(c("ABCD"), c(ref = "AXYD"), ignored_regex = "Y"),
+    matrix(1L, nrow = 1L, ncol = 1L)
+  )
+})
+
 # TODO: find a testing set
 test_that("reassign_alleles 1:1", {
   # Input in 3 files, output in 4 file.
@@ -103,7 +135,7 @@ test_that("reassign_alleles_after_genotype_inference", {
 
   report_dir <- file.path(tmp_dir, "enchantr")
   tmp_dir <- file.path(tempdir(), "reassign_alleles_after_genotype_inference")
-  genotype_db <- file.path(report_dir, "db_genotype")
+  genotype_db <- file.path(report_dir, "references")
 
   enchantr_report("reassign_alleles",
     report_params = list(
@@ -118,6 +150,9 @@ test_that("reassign_alleles_after_genotype_inference", {
 
   report_dir <- file.path(tmp_dir, "enchantr")
   repertoires <- list.files(file.path(report_dir, "repertoires"), full.names = T)
+  expect_equal(length(repertoires), 2)
   db <- read_rearrangement(repertoires)
-  expect_equal(length(grep("_", db$v_call)), 1259)
+  expect_equal(nrow(db), 1144)
+  expect_true(all(!is.na(db$d_call) & nzchar(db$d_call)))
+  expect_true(all(!is.na(db$j_call) & nzchar(db$j_call)))
 })

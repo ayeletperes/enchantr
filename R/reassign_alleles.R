@@ -109,6 +109,7 @@ reassign_segment <- function(db, seg, loci, references, treat_multigene_as_uncal
     return(matrix(numeric(0), nrow = n_q, ncol = n_r))
   }
 
+  use_mutation_count <- identical(ignored_regex, "[\\.N-]") || isTRUE(ignored_regex)
   dists <- lapply(ref_list, function(x) {
     ref_seqs <- if (trim_seq && !is.null(indices) && !is.null(germline_trim_columns) && !is.null(data)) {
       # repeat and trim the reference sequence for each query according to data
@@ -116,15 +117,20 @@ reassign_segment <- function(db, seg, loci, references, treat_multigene_as_uncal
     } else {
       rep(x, n_q)
     }
-    sapply(
-      getMutatedPositions(
-        sequences,
-        ref_seqs,
-        match_instead = FALSE,
-        ignored_regex = ignored_regex
-      ),
-      length
-    )
+
+    if (use_mutation_count) {
+      mutation_count(toupper(ref_seqs), toupper(sequences), X = 0L, parallel = FALSE, return_count = TRUE)
+    } else {
+      sapply(
+        tigger::getMutatedPositions(
+          sequences,
+          ref_seqs,
+          match_instead = FALSE,
+          ignored_regex = ignored_regex
+        ),
+        length
+      )
+    }
   })
   matrix(unlist(dists), ncol = n_r, byrow = FALSE)
 }
