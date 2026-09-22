@@ -71,6 +71,7 @@ Imports:
     Rcpp
 Suggests:
     optparse,
+    piglet,
     testthat
 RoxygenNote: 7.3.3
 URL: https://enchantr.readthedocs.io/en/stable
