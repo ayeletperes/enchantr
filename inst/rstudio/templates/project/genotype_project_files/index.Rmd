@@ -97,6 +97,22 @@ params:
       label: "`allele_thresholds_db`: [method='allele_based'] Path to a TSV of alleles and their population-derived presence thresholds. If NULL, PIgLET's bundled thresholds are used."
       input: file
       value: NULL
+   unmutated_d_only:
+      label: "`unmutated_d_only`: For the D genotype only, keep sequences whose D region matches the germline D allele exactly (coordinates from `d_sequence_start`/`d_sequence_end` and `d_germline_start`/`d_germline_end`). Off by default."
+      input: checkbox
+      value: FALSE
+   unambiguous_v_only:
+      label: "`unambiguous_v_only`: Keep only sequences with a single V assignment, for every segment genotyped. Off by default."
+      input: checkbox
+      value: FALSE
+   unmutated_v_only:
+      label: "`unmutated_v_only`: Keep only sequences with no differences from their germline across the aligned V region (positions counted up to `v_germline_end`, ignoring . N -). Off by default."
+      input: checkbox
+      value: FALSE
+   sequenced_from_v_start:
+      label: "`sequenced_from_v_start`: For protocols that sequence from the first nucleotide of V: drop sequences whose alignment does not start there, since they did not capture what the protocol targeted. Off by default."
+      input: checkbox
+      value: FALSE
    allele_thresholds_release:
       label: "`allele_thresholds_release`: [method='allele_based'] Release or version label for the threshold table, recorded with the genotype. The checksum is recorded either way."
       input: text
@@ -252,7 +268,13 @@ cols_to_read <- unique(c(
   "sequence_id", "productive", "junction_length", "sequence_alignment",
   params$v_call, params$d_call, params$j_call,
   params$germline_column, params$clone_id_column,
-  params$genotypeby, "subject_id", "sample_id", "species"
+  params$genotypeby, "subject_id", "sample_id", "species",
+  # only read by the optional pre-genotype filters below
+  if (as.logical(params$unmutated_v_only)) "v_germline_end",
+  if (as.logical(params$unmutated_d_only)) {
+    c("sequence", "d_sequence_start", "d_sequence_end",
+      "d_germline_start", "d_germline_end")
+  }
 ))
 
 db <- readInput(params[["input"]], col_select = cols_to_read)
@@ -328,6 +350,44 @@ filter_steps <- count_rows_step(filter_steps, "productive == TRUE", rows_in, nro
 rows_in <- nrow(db)
 db <- db %>% dplyr::filter(.data[["junction_length"]] %% 3 == 0)
 filter_steps <- count_rows_step(filter_steps, "junction_length %% 3 == 0", rows_in, nrow(db))
+
+# Optional, off by default. All three come from the rhesus macaque annotation
+# pipeline (take_only_none_v_mut), where an incomplete reference makes
+# mutation- and truncation-sensitive calls unreliable unless what the genotype
+# sees is restricted first.
+if (as.logical(params$unambiguous_v_only)) {
+  rows_in <- nrow(db)
+  db <- db[!grepl(",", db[[params$v_call]]), , drop = FALSE]
+  filter_steps <- count_rows_step(filter_steps, "single V assignment", rows_in, nrow(db))
+}
+
+if (as.logical(params$unmutated_v_only)) {
+  if (!"v_germline_end" %in% names(db)) {
+    stop("'unmutated_v_only' is TRUE but the column 'v_germline_end' is not in the input.")
+  }
+  # germline_alignment_d_mask only exists once germlines were created with D
+  # masked, so say which column is empty instead of dropping every sequence.
+  if (!params$germline_column %in% names(db) ||
+      all(is.na(db[[params$germline_column]]) | !nzchar(db[[params$germline_column]]))) {
+    stop("'unmutated_v_only' is TRUE but the germline column '", params$germline_column,
+         "' is empty or missing. Set 'germline_column' to the germline alignment the ",
+         "input carries.")
+  }
+  rows_in <- nrow(db)
+  v_end <- suppressWarnings(as.integer(db[["v_germline_end"]]))
+  mut <- alakazam::seqMismatchCountRcpp(
+    substr(db[[params$seq_column]], 1, v_end),
+    substr(db[[params$germline_column]], 1, v_end)
+  )
+  db <- db[!is.na(mut) & mut == 0, , drop = FALSE]
+  filter_steps <- count_rows_step(filter_steps, "no mutations across the aligned V region", rows_in, nrow(db))
+}
+
+if (as.logical(params$sequenced_from_v_start)) {
+  rows_in <- nrow(db)
+  db <- db[!grepl("^\\.", db[[params$seq_column]]), , drop = FALSE]
+  filter_steps <- count_rows_step(filter_steps, "sequence starts at the first V nucleotide", rows_in, nrow(db))
+}
 
 if (nrow(db) == 0) {
   stop("No sequences are left after filtering. See the row counts above: ",
@@ -460,8 +520,44 @@ if (identical(method, "allele_based")) {
 
 # Genotype each segment; output shares one schema across methods.
 genotypes <- lapply(segments_to_genotype, function(seg) {
+  db_seg <- db
+  # D is short, so one mismatch is a large fraction of it. The macaque pipeline
+  # genotypes D from exact matches only, and only for D: V and J keep the full
+  # input. Coordinates are in `sequence` and in the germline allele per the AIRR
+  # schema, so this cannot read germline_alignment, and a D-masked germline would
+  # report no mismatches at all.
+  if (seg == "d" && as.logical(params$unmutated_d_only)) {
+    missing <- setdiff(c("sequence", "d_sequence_start", "d_sequence_end",
+                         "d_germline_start", "d_germline_end"), names(db_seg))
+    if (length(missing) > 0) {
+      stop("'unmutated_d_only' is TRUE but the input has no ", paste(missing, collapse = ", "), ".")
+    }
+    if (!is.list(references)) {
+      stop("'unmutated_d_only' is TRUE but no germline reference was given; set 'imgt_db'.")
+    }
+    rows_in <- nrow(db_seg)
+    # readIMGT() nests by locus, then by segment: references[[locus]][["D"]].
+    ref_d <- unlist(unname(lapply(references, function(loc) loc[["D"]])))
+    germ_d <- ref_d[db_seg[["d_call"]]]
+    mut_d <- rep(NA_integer_, nrow(db_seg))
+    # An ambiguous or unknown d_call has no single germline to compare against.
+    ok <- !is.na(germ_d) & !is.na(db_seg[["d_sequence_start"]]) & !is.na(db_seg[["d_germline_start"]])
+    mut_d[ok] <- alakazam::seqMismatchCountRcpp(
+      substr(db_seg[["sequence"]][ok], db_seg[["d_sequence_start"]][ok], db_seg[["d_sequence_end"]][ok]),
+      substr(germ_d[ok], db_seg[["d_germline_start"]][ok], db_seg[["d_germline_end"]][ok])
+    )
+    db_seg <- db_seg[!is.na(mut_d) & mut_d == 0, , drop = FALSE]
+    filter_steps <<- count_rows_step(filter_steps, "no mutations in the D region (D genotype only)",
+                                     rows_in, nrow(db_seg))
+    # Without this the D genotype would just be absent from the report.
+    if (nrow(db_seg) == 0) {
+      stop("'unmutated_d_only' removed all ", rows_in, " sequences, so no D genotype could be ",
+           "inferred. ", sum(ok), " of them had a single d_call present in the germline ",
+           "reference; check that the reference carries the D alleles the calls use.")
+    }
+  }
   infer_genotype(
-    db = db,
+    db = db_seg,
     seg = seg,
     loci = loci,
     method = method,
