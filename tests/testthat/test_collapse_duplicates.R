@@ -222,3 +222,30 @@ test_that("Collapse duplicates on sample_id, mask 3 bases to 3 prime end", {
   db_s3 <- suppressWarnings(read_rearrangement(file.path(report_dir, "repertoires", "S3_collapse_collapse-pass.tsv.gz")))
   expect_equal(db_s3[['sequence_alignment']], c('CCCCTNNN', 'ACCCTNNN', 'ATCGGNNN', 'CTCGGNNN','NAACTNNN'))
 })
+
+test_that("sequences that do not start at the first V nucleotide are counted, and dropped on request", {
+  skip_on_cran()
+  # 21 of the 1144 sequences in this repertoire align from a later position.
+  input <- normalizePath(file.path("..", "data-tests", "subj_multiple_files", "db_let_12.tsv"))
+  tmp_dir <- file.path(tempdir(), "collapse_duplicates_v_start")
+  suppressWarnings(enchantr_report("collapse_duplicates", report_params = list(
+    input = input,
+    collapseby = "subject_id", outputby = "subject_id",
+    sequenced_from_v_start = TRUE,
+    outdir = tmp_dir,
+    nproc = 1,
+    log = "test_collapse_duplicates_v_start_command_log"
+  )))
+
+  report_dir <- file.path(tmp_dir, "enchantr")
+  counts <- read.delim(file.path(report_dir, "tables", "tab_v_start.tsv"), sep = "\t")
+  expect_equal(sum(counts$sequences), 1144)
+  expect_equal(sum(counts$not_from_v_start), 21)
+
+  # None of them survive into the output that clonal analysis reads.
+  kept <- do.call(rbind, lapply(
+    list.files(file.path(report_dir, "repertoires"), full.names = TRUE),
+    function(f) suppressWarnings(read_rearrangement(f))
+  ))
+  expect_false(any(startsWith(kept$sequence_alignment, ".")))
+})

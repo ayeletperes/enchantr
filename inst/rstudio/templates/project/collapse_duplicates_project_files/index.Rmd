@@ -56,6 +56,10 @@ params:
       label: "mask_length_to_3end"
       input: numeric
       value: 0
+   sequenced_from_v_start:
+      label: "`sequenced_from_v_start`: For protocols that sequence from the first nucleotide of V: drop sequences whose alignment does not start there. The report always shows how many there are; this decides whether they are removed. Off by default."
+      input: checkbox
+      value: FALSE
    collapse_filter_threshold:
       label: "collapse_filter_threshold"
       input: numeric
@@ -108,6 +112,7 @@ suppressPackageStartupMessages(library("airr"))
 suppressPackageStartupMessages(library("alakazam"))
 suppressPackageStartupMessages(library("shazam"))
 suppressPackageStartupMessages(library("stringr"))
+suppressPackageStartupMessages(library("ggplot2"))
 suppressPackageStartupMessages(library("rlang"))
 
 if (!dir.exists(params[['outdir']])) {
@@ -154,6 +159,69 @@ input_sizes_byoutput <- db %>%
         input_size = n()
     )
 
+```
+
+# Start of the V alignment
+
+A protocol that targets the first nucleotide of V should produce alignments that
+start at IMGT position 1. A sequence that starts later missed the 5' end of V:
+its start cannot be trusted, and it carries a shorter V into duplicate collapsing
+and clonal analysis. This is measured before any masking below, on the alignment
+as it came from the aligner.
+
+```{r v-start}
+# Position of the first aligned nucleotide: -1 when the alignment is all gaps,
+# NA when there is no alignment at all.
+v_start <- as.integer(regexpr("[^.]", db[["sequence_alignment"]]))
+from_v_start <- !is.na(v_start) & v_start == 1
+
+v_start_tab <- db %>%
+    mutate(from_v_start = from_v_start) %>%
+    group_by(!!!rlang::syms(unique(params$collapseby))) %>%
+    summarize(sequences = n(),
+              from_v_start = sum(.data$from_v_start),
+              .groups = "drop") %>%
+    mutate(not_from_v_start = .data$sequences - .data$from_v_start)
+```
+
+```{r tab-v-start, results='asis', echo=FALSE}
+tab_v_start <- eetable(v_start_tab,
+    caption = "Sequences whose alignment starts at the first V nucleotide, and those that do not",
+    outdir = params$outdir,
+    file = "tab_v_start")
+tab_v_start$table
+```
+
+```{r echo=FALSE, results='asis'}
+print_table_caption(tag = "tab_v_start", text = tab_v_start$caption)
+```
+
+```{r p-v-start, fig.cap=p_v_start$enchantr$html_caption}
+p_v_start <- ggplot(db %>% mutate(from_v_start = from_v_start),
+                    aes(x = !!rlang::sym(unique(params$collapseby)[1]),
+                        fill = from_v_start)) +
+    geom_bar(linewidth = 0.2, color = "black") +
+    coord_flip() +
+    labs(fill = "starts at the\nfirst V nucleotide", y = "sequences") +
+    theme_enchantr()
+p_v_start <- eeplot(p_v_start, params$outdir, knitr::opts_current$get("label"),
+                    caption = "Sequences per group, split by whether the alignment starts at the first V nucleotide.")
+p_v_start
+```
+
+```{r filter-v-start}
+if (as.logical(params$sequenced_from_v_start)) {
+    rows_in <- nrow(db)
+    db <- db[from_v_start, ]
+    print("Filter out sequences whose alignment does not start at the first V nucleotide.")
+    print(paste0("Before filtering, there are ", rows_in, " sequences."))
+    print(paste0("After filtering, there are ", nrow(db), " sequences."))
+    if (nrow(db) == 0) {
+        stop("'sequenced_from_v_start' removed all ", rows_in, " sequences. None of them ",
+             "aligned from the first V nucleotide; check that this is the right protocol ",
+             "for these data.")
+    }
+}
 ```
 
 ```{r eval=params$mask_imgt_position!=0, results='asis'}
