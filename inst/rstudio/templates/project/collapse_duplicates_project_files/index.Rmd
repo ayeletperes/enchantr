@@ -45,9 +45,13 @@ params:
       input: text
       value: "c_region"
    locus:
-      label: "`locus`"
+      label: "`locus`: the receptor class (`IG`, `TR`) or the loci (e.g. `IGH`, or `IGH,IGK`) the samples target. Comma-separated."
       input: text
       value: "IG"
+   restrict_to_locus:
+      label: "`restrict_to_locus`: Drop sequences whose locus is not one of `locus`. The report always reports how many there are; this decides whether they are removed. Off by default."
+      input: checkbox
+      value: FALSE
    mask_imgt_position:
       label: "mask_imgt_position"
       input: numeric
@@ -159,6 +163,64 @@ input_sizes_byoutput <- db %>%
         input_size = n()
     )
 
+```
+
+# Locus of the assigned genes
+
+A library that targets one locus can still be handed a sequence assigned to
+another: the aligner reports the best match in whatever reference it was given.
+Such a sequence carries the wrong chain into duplicate collapsing and clonal
+analysis, so the report states how many there are, per group.
+
+```{r locus-counts}
+# The locus column comes from the aligner when present; otherwise it is read off
+# the V call, which is what getLocus() does. This report has no column parameters,
+# so v_call is the AIRR field name.
+seq_locus <- if ("locus" %in% colnames(db)) {
+    toupper(db[["locus"]])
+} else {
+    toupper(getLocus(db[["v_call"]]))
+}
+
+# 'IG' or 'TR' name a whole class, a value like 'IGH' one locus.
+wanted <- toupper(trimws(strsplit(params$locus, ",")[[1]]))
+wanted <- wanted[nzchar(wanted)]
+in_locus <- Reduce(`|`, lapply(wanted, function(w) {
+    if (nchar(w) == 2) startsWith(seq_locus, w) else seq_locus == w
+}), init = rep(FALSE, length(seq_locus)))
+
+locus_tab <- db %>%
+    mutate(locus_called = seq_locus, in_locus = in_locus) %>%
+    group_by(!!!rlang::syms(unique(params$collapseby)), .data$locus_called, .data$in_locus) %>%
+    summarize(sequences = n(), .groups = "drop")
+```
+
+```{r tab-locus, results='asis', echo=FALSE}
+tab_locus <- eetable(locus_tab,
+    caption = paste0("Sequences per assigned locus, and whether the locus is one of the targeted ones (",
+                     paste(wanted, collapse = ", "), ")"),
+    outdir = params$outdir,
+    file = "tab_locus")
+tab_locus$table
+```
+
+```{r echo=FALSE, results='asis'}
+print_table_caption(tag = "tab_locus", text = tab_locus$caption)
+```
+
+```{r filter-locus}
+if (as.logical(params$restrict_to_locus)) {
+    rows_in <- nrow(db)
+    db <- db[in_locus, ]
+    seq_locus <- seq_locus[in_locus]
+    print(paste0("Filter out sequences whose locus is not one of ", paste(wanted, collapse = ", "), "."))
+    print(paste0("Before filtering, there are ", rows_in, " sequences."))
+    print(paste0("After filtering, there are ", nrow(db), " sequences."))
+    if (nrow(db) == 0) {
+        stop("'restrict_to_locus' removed all ", rows_in, " sequences: none of them were assigned to ",
+             paste(wanted, collapse = ", "), ". Check that 'locus' names the loci these samples target.")
+    }
+}
 ```
 
 # Start of the V alignment

@@ -249,3 +249,39 @@ test_that("sequences that do not start at the first V nucleotide are counted, an
   ))
   expect_false(any(startsWith(kept$sequence_alignment, ".")))
 })
+
+
+test_that("sequences outside the targeted loci are counted, and dropped on request", {
+  skip_on_cran()
+  # This repertoire is IGH throughout, so restricting to IGH keeps everything and
+  # restricting to IGK must leave nothing and say so.
+  input <- normalizePath(file.path("..", "data-tests", "subj_multiple_files", "db_let_12.tsv"))
+  tmp_dir <- file.path(tempdir(), "collapse_duplicates_locus")
+  suppressWarnings(enchantr_report("collapse_duplicates", report_params = list(
+    input = input,
+    collapseby = "subject_id", outputby = "subject_id",
+    locus = "IGH",
+    restrict_to_locus = TRUE,
+    outdir = tmp_dir,
+    nproc = 1,
+    log = "test_collapse_duplicates_locus_command_log"
+  )))
+
+  counts <- read.delim(file.path(tmp_dir, "enchantr", "tables", "tab_locus.tsv"), sep = "\t")
+  expect_equal(sum(counts$sequences), 1144)
+  expect_true(all(counts$locus_called == "IGH"))
+  expect_true(all(as.logical(counts$in_locus)))
+
+  expect_error(
+    suppressWarnings(enchantr_report("collapse_duplicates", report_params = list(
+      input = input,
+      collapseby = "subject_id", outputby = "subject_id",
+      locus = "IGK",
+      restrict_to_locus = TRUE,
+      outdir = file.path(tempdir(), "collapse_duplicates_locus_none"),
+      nproc = 1,
+      log = "test_collapse_duplicates_locus_none_command_log"
+    ))),
+    "removed all 1144 sequences"
+  )
+})
