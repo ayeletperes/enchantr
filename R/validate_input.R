@@ -66,6 +66,12 @@ validate_input <- function(input, miairr, collapseby, cloneby, reassign=TRUE) {
     input[,'valid_species'] <- TRUE
     if (length(not_valid_species)>0) {
         input[is.na(species),'valid_species'] <- FALSE
+        # An unmapped species becomes NA and is then handed to IgBLAST as
+        # '--organism NA', which fails much later and says nothing about the input.
+        stop("These `species` values have no mapping: ",
+             paste(unique(input[['species']][is.na(species)]), collapse = ", "),
+             ". Accepted spellings: ",
+             paste(unlist(valid_species), collapse = ", "), ".")
     }
 
     ## TODO: make a function to do column name validations
@@ -172,8 +178,15 @@ validate_input <- function(input, miairr, collapseby, cloneby, reassign=TRUE) {
 
 # Settings
 # Valid species. Use lower case.
+# The name each spelling maps to is the one the germline reference carries: it
+# selects <species>/vdj/ in the reference and the <species>_<ig|tr>_<v|d|j|c> BLAST
+# databases. IgBLAST's own organism vocabulary is separate and is mapped where
+# IgBLAST is called, because it does not have a name for every species a reference
+# can hold.
 valid_species <- list("human"=c("human", "homo sapiens", "h. sapiens", "hs"),
-                      "mouse"=c("mouse", "mus musculus", "mm"))
+                      "mouse"=c("mouse", "mus musculus", "mm"),
+                      "rhesus"=c("rhesus", "rhesus_monkey", "rhesus monkey",
+                                 "rhesus macaque", "macaca mulatta", "m. mulatta"))
 
 # `species` must exist, then translate to name format
 # suitable for igblast and downstream analysis
