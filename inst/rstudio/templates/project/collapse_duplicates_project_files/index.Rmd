@@ -176,21 +176,18 @@ analysis, so the report states how many there are, per group.
 # The locus column comes from the aligner when present; otherwise it is read off
 # the V call, which is what getLocus() does. This report has no column parameters,
 # so v_call is the AIRR field name.
-seq_locus <- if ("locus" %in% colnames(db)) {
-    toupper(db[["locus"]])
-} else {
-    toupper(getLocus(db[["v_call"]]))
-}
-
 # 'IG' or 'TR' name a whole class, a value like 'IGH' one locus.
 wanted <- toupper(trimws(strsplit(params$locus, ",")[[1]]))
-wanted <- wanted[nzchar(wanted)]
-in_locus <- Reduce(`|`, lapply(wanted, function(w) {
-    if (nchar(w) == 2) startsWith(seq_locus, w) else seq_locus == w
-}), init = rep(FALSE, length(seq_locus)))
+
+db <- db %>%
+    mutate(locus_called = if ("locus" %in% colnames(db)) toupper(.data$locus)
+                          else toupper(getLocus(.data$v_call)),
+           # A sequence with no V call has no locus and matches neither, which is
+           # what %in% gives for NA.
+           in_locus = .data$locus_called %in% wanted |
+                      substr(.data$locus_called, 1, 2) %in% wanted)
 
 locus_tab <- db %>%
-    mutate(locus_called = seq_locus, in_locus = in_locus) %>%
     group_by(!!!rlang::syms(unique(params$collapseby)), .data$locus_called, .data$in_locus) %>%
     summarize(sequences = n(), .groups = "drop")
 ```
@@ -211,8 +208,7 @@ print_table_caption(tag = "tab_locus", text = tab_locus$caption)
 ```{r filter-locus}
 if (as.logical(params$restrict_to_locus)) {
     rows_in <- nrow(db)
-    db <- db[in_locus, ]
-    seq_locus <- seq_locus[in_locus]
+    db <- db %>% filter(.data$in_locus)
     print(paste0("Filter out sequences whose locus is not one of ", paste(wanted, collapse = ", "), "."))
     print(paste0("Before filtering, there are ", rows_in, " sequences."))
     print(paste0("After filtering, there are ", nrow(db), " sequences."))
@@ -221,6 +217,10 @@ if (as.logical(params$restrict_to_locus)) {
              paste(wanted, collapse = ", "), ". Check that 'locus' names the loci these samples target.")
     }
 }
+```
+
+```{r drop-locus-columns}
+db <- db %>% select(-"locus_called", -"in_locus")
 ```
 
 # Start of the V alignment
@@ -234,11 +234,11 @@ as it came from the aligner.
 ```{r v-start}
 # Position of the first aligned nucleotide: -1 when the alignment is all gaps,
 # NA when there is no alignment at all.
-v_start <- as.integer(regexpr("[^.]", db[["sequence_alignment"]]))
-from_v_start <- !is.na(v_start) & v_start == 1
+db <- db %>%
+    mutate(v_start = as.integer(regexpr("[^.]", .data$sequence_alignment)),
+           from_v_start = !is.na(.data$v_start) & .data$v_start == 1)
 
 v_start_tab <- db %>%
-    mutate(from_v_start = from_v_start) %>%
     group_by(!!!rlang::syms(unique(params$collapseby))) %>%
     summarize(sequences = n(),
               from_v_start = sum(.data$from_v_start),
@@ -259,7 +259,7 @@ print_table_caption(tag = "tab_v_start", text = tab_v_start$caption)
 ```
 
 ```{r p-v-start, fig.cap=p_v_start$enchantr$html_caption}
-p_v_start <- ggplot(db %>% mutate(from_v_start = from_v_start),
+p_v_start <- ggplot(db,
                     aes(x = !!rlang::sym(unique(params$collapseby)[1]),
                         fill = from_v_start)) +
     geom_bar(linewidth = 0.2, color = "black") +
@@ -274,7 +274,7 @@ p_v_start
 ```{r filter-v-start}
 if (as.logical(params$sequenced_from_v_start)) {
     rows_in <- nrow(db)
-    db <- db[from_v_start, ]
+    db <- db %>% filter(.data$from_v_start)
     print("Filter out sequences whose alignment does not start at the first V nucleotide.")
     print(paste0("Before filtering, there are ", rows_in, " sequences."))
     print(paste0("After filtering, there are ", nrow(db), " sequences."))
@@ -284,6 +284,11 @@ if (as.logical(params$sequenced_from_v_start)) {
              "for these data.")
     }
 }
+```
+
+```{r drop-v-start-columns}
+# The report's own columns, not part of the repertoire it passes on.
+db <- db %>% select(-"v_start", -"from_v_start")
 ```
 
 ```{r eval=params$mask_imgt_position!=0, results='asis'}
