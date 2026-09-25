@@ -361,14 +361,27 @@ if (as.logical(params$unambiguous_v_only)) {
   filter_steps <- count_rows_step(filter_steps, "single V assignment", rows_in, nrow(db))
 }
 
+# A light chain has no D to mask, so germline_alignment_d_mask is empty for it and
+# every light chain sequence would count as NA mutations and be dropped. Mutations
+# here are only counted up to v_germline_end, where the mask makes no difference.
+germline_column <- params$germline_column
+if (germline_column %in% names(db) && "germline_alignment" %in% names(db)) {
+  no_masked <- is.na(db[[germline_column]]) | !nzchar(db[[germline_column]])
+  if (any(no_masked)) {
+    db[[".germline_for_mutations"]] <- ifelse(no_masked, db[["germline_alignment"]],
+                                              db[[germline_column]])
+    message("GERMLINE_FALLBACK> ", sum(no_masked), " of ", nrow(db), " sequences carry no '",
+            germline_column, "'; their mutations are counted against 'germline_alignment'")
+    germline_column <- ".germline_for_mutations"
+  }
+}
+
 if (as.logical(params$unmutated_v_only)) {
   if (!"v_germline_end" %in% names(db)) {
     stop("'unmutated_v_only' is TRUE but the column 'v_germline_end' is not in the input.")
   }
-  # germline_alignment_d_mask only exists once germlines were created with D
-  # masked, so say which column is empty instead of dropping every sequence.
-  if (!params$germline_column %in% names(db) ||
-      all(is.na(db[[params$germline_column]]) | !nzchar(db[[params$germline_column]]))) {
+  if (!germline_column %in% names(db) ||
+      all(is.na(db[[germline_column]]) | !nzchar(db[[germline_column]]))) {
     stop("'unmutated_v_only' is TRUE but the germline column '", params$germline_column,
          "' is empty or missing. Set 'germline_column' to the germline alignment the ",
          "input carries.")
@@ -377,7 +390,7 @@ if (as.logical(params$unmutated_v_only)) {
   v_end <- suppressWarnings(as.integer(db[["v_germline_end"]]))
   mut <- alakazam::seqMismatchCountRcpp(
     substr(db[[params$seq_column]], 1, v_end),
-    substr(db[[params$germline_column]], 1, v_end)
+    substr(db[[germline_column]], 1, v_end)
   )
   db <- db[!is.na(mut) & mut == 0, , drop = FALSE]
   filter_steps <- count_rows_step(filter_steps, "no mutations across the aligned V region", rows_in, nrow(db))
@@ -439,12 +452,14 @@ if (params$single_clone_representative) {
          "'single_clone_representative' to FALSE.")
   }
   # Select clonal representatives
+  rows_in <- nrow(db)
   db <- select_clonal_representatives(db,
     sequence_col = params$seq_column,
-    germline_col = params$germline_column,
+    germline_col = germline_column,
     clone_id_col = params$clone_id_column
   )
   db <- db %>% filter(clone_representative)
+  filter_steps <- count_rows_step(filter_steps, "one representative per clone", rows_in, nrow(db))
 }
 ```   
 
@@ -579,10 +594,14 @@ genotypes <- lapply(segments_to_genotype, function(seg) {
 })
 genotypes <- do.call(rbind, genotypes)
 if (is.null(genotypes) || nrow(genotypes) == 0) {
+  # knitr prints a chunk's warnings after it, so a chunk that stops loses them.
   stop(
     "Genotype inference with method '", method, "' produced no results for any of the ",
-    "segments (", paste(segments_to_genotype, collapse = ", "), "). ",
-    "See the warnings above for the underlying cause."
+    "segments (", paste(segments_to_genotype, collapse = ", "), ") from ", nrow(db),
+    " sequences (", paste(sprintf("%s %s", names(table(db[["locus"]])), table(db[["locus"]])),
+                          collapse = ", "), "). Row counts up to this point: ",
+    paste(sprintf("%s %d->%d", filter_steps$step, filter_steps$rows_in, filter_steps$rows_out),
+          collapse = "; "), "."
   )
 }
 genotypes <- augment_genotype_table(
