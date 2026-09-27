@@ -106,7 +106,7 @@ params:
       input: checkbox
       value: FALSE
    unmutated_v_only:
-      label: "`unmutated_v_only`: Keep only sequences with no differences from their germline across the aligned V region (positions counted up to `v_germline_end`, ignoring . N -). Off by default."
+      label: "`unmutated_v_only`: Keep only sequences with no differences from the V germline reference for their V call, across the aligned V region (positions counted up to `v_germline_end`, ignoring . N -). Off by default."
       input: checkbox
       value: FALSE
    sequenced_from_v_start:
@@ -341,6 +341,28 @@ if (all(c("subject_id", "sample_id") %in% colnames(db))) {
     )
 }
 
+```
+# Read germline database
+
+Import the nucleotide germline reference used for alignment.
+Using the same reference ensures positional numbering and mutation counts remain consistent with the upstream alignment step. Each allele call present in the repertoire should have a corresponding entry in the germline database.
+
+
+```{r read-germline}
+loci <- unique(db[["locus"]])
+
+# Handle germline database input
+if (params$imgt_db != "") {
+  imgt_db <- prepareIMGT(params$imgt_db)
+  references <- dowser::readIMGT(file.path(imgt_db, species, "vdj"), quiet = TRUE)
+} else {
+  references <- NA
+}
+```
+
+# Sequence filters
+
+```{r input-filters}
 # Each filter records rows in and out in `filter_steps`.
 filter_steps <- NULL
 rows_in <- nrow(db)
@@ -362,8 +384,7 @@ if (as.logical(params$unambiguous_v_only)) {
 }
 
 # A light chain has no D to mask, so germline_alignment_d_mask is empty for it and
-# every light chain sequence would count as NA mutations and be dropped. Mutations
-# here are only counted up to v_germline_end, where the mask makes no difference.
+# clonal representative selection would have no germline to compare against.
 germline_column <- params$germline_column
 if (germline_column %in% names(db) && "germline_alignment" %in% names(db)) {
   no_masked <- is.na(db[[germline_column]]) | !nzchar(db[[germline_column]])
@@ -380,17 +401,21 @@ if (as.logical(params$unmutated_v_only)) {
   if (!"v_germline_end" %in% names(db)) {
     stop("'unmutated_v_only' is TRUE but the column 'v_germline_end' is not in the input.")
   }
-  if (!germline_column %in% names(db) ||
-      all(is.na(db[[germline_column]]) | !nzchar(db[[germline_column]]))) {
-    stop("'unmutated_v_only' is TRUE but the germline column '", params$germline_column,
-         "' is empty or missing. Set 'germline_column' to the germline alignment the ",
-         "input carries.")
+  if (!is.list(references)) {
+    stop("'unmutated_v_only' is TRUE but no germline reference was given; set 'imgt_db'.")
+  }
+  # readIMGT() nests by locus, then by segment: references[[locus]][["V"]].
+  ref_v <- unlist(unname(lapply(references, function(loc) loc[["V"]])))
+  v_germline <- ref_v[sub(",.*", "", db[[params$v_call]])]
+  if (any(is.na(v_germline))) {
+    message("V_REFERENCE_MISS> ", sum(is.na(v_germline)), " of ", nrow(db),
+            " sequences carry a V call absent from the germline reference and are dropped")
   }
   rows_in <- nrow(db)
   v_end <- suppressWarnings(as.integer(db[["v_germline_end"]]))
   mut <- alakazam::seqMismatchCountRcpp(
     substr(db[[params$seq_column]], 1, v_end),
-    substr(db[[germline_column]], 1, v_end)
+    substr(v_germline, 1, v_end)
   )
   db <- db[!is.na(mut) & mut == 0, , drop = FALSE]
   filter_steps <- count_rows_step(filter_steps, "no mutations across the aligned V region", rows_in, nrow(db))
@@ -417,24 +442,6 @@ report_output_fn <- paste0(outname, "_genotype_report.tsv")
 log_fn <- file.path(params$outdir, paste0(if (!is.null(params$log)) params$log else "command_log", ".txt"))
 ```
 
-
-# Read germline database
-
-Import the nucleotide germline reference used for alignment.
-Using the same reference ensures positional numbering and mutation counts remain consistent with the upstream alignment step. Each allele call present in the repertoire should have a corresponding entry in the germline database.
-
-
-```{r read-germline}
-loci <- unique(db[["locus"]])
-
-# Handle germline database input
-if (params$imgt_db != "") {
-  imgt_db <- prepareIMGT(params$imgt_db)
-  references <- dowser::readIMGT(file.path(imgt_db, species, "vdj"), quiet = TRUE)
-} else {
-  references <- NA
-}
-```
 
 # Clonal representative selection (optional)
 
