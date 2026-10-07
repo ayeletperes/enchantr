@@ -285,3 +285,23 @@ test_that("sequences outside the targeted loci are counted, and dropped on reque
     "removed all 1144 sequences"
   )
 })
+
+test_that("c_call is filled from c_region whatever the locus", {
+  skip_on_cran()
+  db <- read.delim(file.path("..", "data-tests", "subj_multiple_files", "data_to_test_collapse_duplicates.tsv"))
+  db$c_call <- NA
+  db$locus <- "IGH"
+  db$c_region <- rep_len(c("IGHM_CH1", "IGHG1", "unknown"), nrow(db))
+  input <- tempfile(fileext = ".tsv")
+  write.table(db, input, sep = "\t", quote = FALSE, row.names = FALSE)
+  tmp_dir <- tempfile("collapse_c_region_")
+  suppressWarnings(enchantr_report("collapse_duplicates", report_params = list(
+    input = input, collapseby = "sample_id", outputby = "sample_id",
+    locus = "IGH", outdir = tmp_dir, nproc = 1, log = "test_c_region_log"
+  )))
+  out <- do.call(rbind, lapply(
+    list.files(file.path(tmp_dir, "enchantr", "repertoires"), full.names = TRUE),
+    function(f) suppressWarnings(read_rearrangement(f))
+  ))
+  expect_setequal(unique(out$c_call), c("IGHM", "IGHG1", NA))
+})
